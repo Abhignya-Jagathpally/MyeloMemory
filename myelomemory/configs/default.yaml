@@ -1,0 +1,62 @@
+# MyeloMemory — Default Configuration
+# For CPU/small GPU development and testing
+
+checkpoint_dir: checkpoints
+log_dir: logs
+wandb_project: myelomemory
+
+data:
+  min_protein_coverage: 0.7
+  imputation_method: knn
+  normalization: quantile
+  ppi_confidence_threshold: 0.7
+  test_fraction: 0.15
+  val_fraction: 0.15
+  random_seed: 42
+
+vae:
+  input_dim: 8000
+  epigenome_dim: 50000
+  latent_dim: 64
+  encoder_hidden_dims: [2048, 1024, 512]
+  decoder_hidden_dims: [512, 1024, 2048]
+  dropout: 0.1
+  pretrain_epochs: 100
+  finetune_epochs: 50
+  pretrain_lr: 0.001
+  finetune_lr: 0.0001
+  batch_size: 64
+  gradient_checkpointing: false
+  patience: 20
+
+stability:
+  ode_solver: dopri5
+  integration_time: 100.0
+  n_perturbation_samples: 20
+  calibration_epochs: 200
+  calibration_batch_size: 32
+
+gnn:
+  hidden_dim: 128
+  num_layers: 3
+  num_heads: 4
+  conv_type: gat
+  pool_type: global_attention
+  epochs: 100
+  lr: 0.0005
+  batch_size: 32
+  patience: 20
+
+hardware:
+  device: cpu
+  dtype: float32
+  compile: false
+  pin_memory: false
+  num_workers: 2
+  deterministic: true
+  seed: 42
+
+api:
+  port: 8000
+  workers: 1
+  max_batch_size: 32

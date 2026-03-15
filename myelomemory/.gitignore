@@ -1,0 +1,42 @@
+# Checkpoints (large files — store on shared filesystem)
+checkpoints/*.pt
+checkpoints/**/*.pt
+
+# Data (downloaded separately)
+data/raw/
+data/processed/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+wandb/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+checkpoints/*.pt
+logs/
+__pycache__/
+*.egg-info/
