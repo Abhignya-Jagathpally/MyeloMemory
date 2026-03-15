@@ -131,7 +131,7 @@ def create_app(
     @app.get("/config")
     async def get_config() -> dict[str, Any]:
         return {
-            "target_drugs": config.data.target_drugs,
+            "target_drugs": pipeline.drug_names if pipeline else config.data.target_drugs,
             "latent_dim": config.vae.latent_dim,
             "reader_writer_proteins": config.stability.reader_writer_proteins,
             "num_gnn_layers": config.gnn.num_layers,
@@ -158,9 +158,9 @@ def create_app(
 
         result = pipeline.predict_single(proteomics, protein_names)
 
-        # Build drug predictions
+        # Build drug predictions — only for drugs the model was trained on
         drug_preds = []
-        for drug_name in config.data.target_drugs:
+        for drug_name in pipeline.drug_names:
             ic50 = result.drug_resistance.get(drug_name, 0.0)
             rev = result.drug_reversibility.get(drug_name, 0.5)
 
