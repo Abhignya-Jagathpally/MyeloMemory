@@ -159,12 +159,14 @@ Five biologically motivated proteomic profiles representing distinct clinical st
 ## Project Structure
 
 ```
-myelomemory/
+MyeloMemory/
 ├── README.md                        # This file
+├── LICENSE                          # MIT License
 ├── main.py                          # Unified pipeline entry point (8 stages)
 ├── CLAUDE.md                        # Claude Code project context
 ├── pyproject.toml                   # Package metadata and dependencies
 ├── requirements.txt                 # Pinned dependencies
+├── .github/workflows/test.yml       # GitHub Actions CI (Python 3.10-3.12)
 ├── configs/
 │   ├── default.yaml                 # CPU/development config
 │   ├── gpu_optimized.yaml           # H100-optimized (bf16, pin_memory, 8 workers)
@@ -191,12 +193,17 @@ myelomemory/
 │   ├── download_data.py             # Automated dataset download (DepMap, STRING, GDSC)
 │   ├── download_data.sh             # Manual download guide with validation checksums
 │   ├── setup_and_run.sh             # One-command: env + data + full pipeline
-│   └── test_api.py                  # API test harness (5 clinical profiles)
+│   ├── test_api.py                  # API test harness (5 clinical profiles)
+│   ├── test_api_extended.py         # Extended tests (dose-response, perturbation, drugs)
+│   ├── run_baselines.py             # 5 baseline comparisons + ablation study
+│   └── generate_figures.py          # Reproducible figure generation
 ├── tests/
 │   ├── test_vae.py                  # VAE shape contracts + module connectivity
-│   ├── test_stability.py            # ODE solver + Jacobian + scoring tests
+│   ├── test_stability.py            # ODE solver + scoring tests
+│   ├── test_stability_jacobian.py   # Jacobian eigenvalue + NaN handling tests
 │   ├── test_gnn.py                  # GNN forward pass + loss computation tests
-│   └── test_pipeline.py             # End-to-end integration test (small tensors)
+│   ├── test_pipeline.py             # Unit-scale integration test
+│   └── test_pipeline_integration.py # Full checkpoint integration test
 ├── checkpoints/                     # Git-ignored; stored on shared filesystem (~520M)
 │   ├── data_ready.pt                # 25M  - Preprocessed tensors, splits, norm params
 │   ├── vae_pretrained.pt            # 247M - Pan-cancer CCLE VAE weights
@@ -259,7 +266,10 @@ python main.py --config configs/gpu_optimized.yaml --resume-from-latest
 # Multi-GPU training (H100 node with 8 GPUs)
 torchrun --nproc_per_node=8 main.py --config configs/gpu_optimized.yaml --stage vae_pretrain
 
-# Run tests (21 unit tests, no external data needed)
+# Run unit tests (30 tests, no external data needed)
+pytest tests/ -v --tb=short -k "not integration"
+
+# Run integration tests (requires trained checkpoints)
 pytest tests/ -v --tb=short
 
 # Start API server
@@ -267,6 +277,12 @@ python main.py --config configs/gpu_optimized.yaml --stage serve --port 8001
 
 # Run API test harness (5 clinical scenarios)
 python scripts/test_api.py --url http://localhost:8001 --batch
+
+# Run extended API tests (dose-response, perturbation, drug mechanisms)
+python scripts/test_api_extended.py --url http://localhost:8001
+
+# Run baseline comparisons (RF, ElasticNet, GNN ablations)
+python scripts/run_baselines.py --checkpoint-dir checkpoints
 ```
 
 ---
@@ -323,6 +339,45 @@ curl -X POST http://localhost:8001/predict \
   "interpretation": "HIGH memory stability -- this epigenetic state appears deeply locked in. Drug resistance driven by this state is likely IRREVERSIBLE through drug holidays alone. Predicted resistance to: Lenalidomide."
 }
 ```
+
+---
+
+## Baseline Comparisons
+
+Run `python scripts/run_baselines.py` to evaluate 5 baselines against the full pipeline:
+
+| Model | Description |
+|-------|-------------|
+| ElasticNet | Linear model on raw 7,853-dim proteomics |
+| RandomForest | Ensemble model on raw proteomics |
+| GNN (no memory) | Same GNN architecture, memory + stability zeroed out |
+| GNN (no stability) | VAE memory state included, stability fixed at 0.5 |
+| Variance heuristic | Predict training mean IC50 (no ML) |
+
+Results saved to `results/baseline_comparison.json` with per-drug MSE, Spearman rho, and AUROC.
+
+## Extended Validation
+
+Run `python scripts/test_api_extended.py` for 4 additional test categories:
+
+| Category | Profiles | Key Assertion |
+|----------|----------|---------------|
+| **A. Dose-Response** | 6 (100% -> 0% resistant) | Stability decreases monotonically |
+| **B. Single-Protein Perturbation** | 8 (one protein flipped) | EZH2 and DNMT1 are top-4 most impactful |
+| **C. Drug-Mechanism Alignment** | 4 (EZH2i, DNMTi, HDACi, combo) | Combination has lowest stability |
+| **D. Full-Proteome** | 5 (real CCLE test samples) | All predictions valid and in [0, 1] |
+
+## Testing
+
+| Suite | Tests | Requires Checkpoints | Command |
+|-------|-------|---------------------|---------|
+| Unit tests | 30 | No | `pytest tests/ -k "not integration"` |
+| Integration tests | 5 | Yes | `pytest tests/test_pipeline_integration.py` |
+| API tests (basic) | 5 profiles | API running | `python scripts/test_api.py` |
+| API tests (extended) | 23 profiles | API running | `python scripts/test_api_extended.py` |
+| Baselines | 5 models | Checkpoints | `python scripts/run_baselines.py` |
+
+CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml`), testing Python 3.10-3.12 with CPU-only PyTorch.
 
 ---
 
