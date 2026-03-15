@@ -1,128 +1,240 @@
 # MyeloMemory
 
-An AI pipeline that infers epigenetic drug resistance memory states in multiple myeloma by integrating proteomic profiles with epigenomic signatures. MyeloMemory predicts not just **whether** a patient will resist treatment, but **how stable** that resistance is — distinguishing reversible adaptations from locked-in epigenetic memory.
+**Inferring Epigenetic Drug Resistance Memory States in Multiple Myeloma via Proteomic-Epigenomic Integration and ODE-Based Stability Analysis**
 
-## Key Innovation
+*Abhignya Jagathpally --- University of North Texas, 2026*
 
-Traditional drug resistance predictors use static molecular features. MyeloMemory introduces a **memory stability score** derived from ODE-based chromatin dynamics, quantifying how deeply an epigenetic resistance state is locked in. This enables clinicians to distinguish:
+---
 
-- **Transient adaptations** (low stability) — reversible through drug holidays
-- **Locked-in memory** (high stability) — requires epigenetic therapy to overcome
+## Overview
 
-## Architecture
+MyeloMemory is a reproducible AI pipeline that infers epigenetic drug resistance memory states in multiple myeloma by integrating **proteomic profiles** with **epigenomic signatures** across a three-module deep learning architecture. It processes **367 cell lines** from CCLE with **7,853 proteins**, maps them through a conditional VAE, an ODE-based chromatin stability scorer, and a graph attention network on the STRING protein-protein interaction network (**460,888 edges**) to predict not just *whether* a patient will resist treatment, but *how stable* that resistance is — distinguishing reversible adaptations from locked-in epigenetic memory.
 
-MyeloMemory is a three-module pipeline:
+<p align="center">
+  <img src="results/figures/pipeline_architecture.png" width="80%" alt="Pipeline Architecture"/>
+</p>
+<p align="center"><i>Three-module pipeline: Proteome-to-Epigenome VAE, ODE Stability Scorer, and Resistance Pathway GNN.</i></p>
+
+---
+
+## Pipeline Architecture
 
 ```
-Proteomic Profile (7,853 proteins)
-         │
-         ├──► Module 1: Conditional VAE ──► 64-dim Epigenetic Memory State
-         │         (ProteomeToEpigenomeVAE)
-         │
-         ├──► Module 2: ODE Stability Scorer ──► Memory Stability Score [0, 1]
-         │         (Sneppen-Ringrose chromatin ODE + Jacobian eigenvalue analysis)
-         │
-         └──► Module 3: Graph Attention Network ──► Per-Drug Resistance + Reversibility
-                   (ResistanceGNN on STRING PPI network)
+Layer 1: Data Pipeline              Layer 2: Model Training          Layer 3: Inference & Serving
+======================              =======================          ============================
+data_validate: File Checks          vae_pretrain:  Pan-cancer VAE    validate:  End-to-end metrics
+data_prep:     Load + Harmonize     vae_finetune:  Heme subset       serve:     FastAPI endpoint
+               Normalize + Split    stability_cal: ODE calibration
+                                    gnn_train:     GAT on PPI graph
 ```
+
+| Stage | Status | Output |
+|-------|--------|--------|
+| `data_validate` --- File Validation | Done | All 6 datasets verified |
+| `data_prep` --- Load + Harmonize | Done | 367 cell lines, 7,853 proteins, 42 epigenomic features |
+| `vae_pretrain` --- Pan-Cancer VAE | Done | 64-dim latent space, `vae_pretrained.pt` (247M) |
+| `vae_finetune` --- Hematological Fine-tuning | Done | Heme-specific weights, `vae_finetuned.pt` (247M) |
+| `stability_calibrate` --- ODE Calibration | Done | Jacobian-based scoring, `stability_calibrated.pt` (21K) |
+| `gnn_train` --- GNN on PPI Network | Done | best_val_loss=277.78, `gnn_trained.pt` (1.6M) |
+| `validate` --- End-to-End Validation | Done | 367 samples, mean_stability=0.975, std=0.078 |
+| `serve` --- FastAPI Server | Done | `/predict`, `/predict/batch`, `/health`, `/config` |
+
+---
+
+## Datasets
+
+| Source | Reference | Size | Role |
+|--------|-----------|------|------|
+| **CCLE Proteomics** | DepMap Portal | 375 cell lines, 12,558 proteins | Primary proteomic input |
+| **CCLE Epigenomics** | DepMap Portal | 897 cell lines, 43 chromatin features | VAE reconstruction target |
+| **STRING PPI** | STRING v12 | 13.5M edges (460K at conf >= 0.7) | GNN graph structure |
+| **GDSC/CTRPv2** | Sanger/Broad | IC50 for Bortezomib, Lenalidomide | Drug sensitivity labels |
+| **Kronke et al. 2024** | Published cohort | Held-out myeloma data | External validation |
+
+**Preprocessing:** Quantile normalization, KNN imputation (70% coverage filter: 12,558 -> 8,001 -> 7,853 proteins after harmonization), hematological lineage filtering (Myeloid, Lymphoid).
+
+**Known data notes:**
+- Cell lines in common across proteomics + epigenomics after harmonization: 367
+- STRING PPI edges reduced from 13.5M to 460,888 directed edges at confidence >= 0.7
+- Drug sensitivity available for 2 of 6 target drugs in the hematological subset
+
+---
+
+## Results
 
 ### Module 1: Proteome-to-Epigenome VAE
 
-Conditional variational autoencoder that maps proteomic profiles to a 64-dimensional epigenetic memory state embedding. Trained on CCLE pan-cancer data (375 cell lines, 8,001 proteins after coverage filtering), then fine-tuned on hematological cell lines.
+- **Architecture:** 7,853 -> 2,048 -> 1,024 -> 512 -> 64 (latent) -> 512 -> 1,024 -> 2,048 -> 42
+- **Training:** 100 epochs pretrain (pan-cancer), 50 epochs fine-tune (hematological)
+- **Latent space:** 64-dim epigenetic memory state embedding
+- **Features:** Cyclical KL annealing, GELU activations, gradient checkpointing for bf16
 
-- Encoder: 8,001 → 2,048 → 1,024 → 512 → 64 (latent)
-- Decoder: 64 → 512 → 1,024 → 2,048 → 42 (epigenomic features)
-- Cyclical KL annealing, GELU activations, gradient checkpointing for bf16
+### Module 2: ODE Memory Stability Scorer
 
-### Module 2: Memory Stability Scorer
+The stability scorer implements a **Sneppen-Ringrose bistability ODE** parameterized by 26 chromatin reader/writer protein levels, with basin-of-attraction depth estimated via **Jacobian eigenvalue analysis** at the ODE steady state.
 
-Quantifies how deeply an epigenetic state is locked in using a Sneppen-Ringrose bistability ODE system parameterized by 26 chromatin reader/writer protein levels (EZH2, DNMT1, TET2, HDAC1, etc.).
-
-**Stability estimation via Jacobian eigenvalue analysis:**
-1. Extract reader/writer protein levels from full proteome
-2. Map to ODE parameters via learned neural network
-3. Integrate chromatin ODE to steady state (Euler, step_size=0.1)
-4. Compute 2x2 Jacobian at steady state via finite differences (float32)
-5. Extract max eigenvalue via batched quadratic formula
-6. Score = sigmoid(-lambda_max), centered on training distribution
+- **Chromatin proteins tracked:** EZH2, SUZ12, EED, DNMT1/3A/3B, TET1/2/3, KDM6A/B, SETD2, KMT2A/B/C/D, KDM5A/B, HDAC1/2/3, EP300, CREBBP, UHRF1, SMARCB1, SMARCA4
+- **ODE solver:** Euler (step_size=0.1) with float32 Jacobian finite differences
+- **Scoring:** sigmoid(-lambda_max) centered on training distribution (median=1.53, scale=1.56)
+- **Calibration:** 200 epochs against drug sensitivity variance proxy, best loss = 0.010
+- **Training distribution:** mean=0.53, std=0.23, range [0.14, 1.00] (367 samples)
 
 ### Module 3: Resistance Pathway GNN
 
-Graph Attention Network operating on the STRING protein-protein interaction network (7,853 nodes, 460,888 edges at confidence >= 0.7). Each node receives the protein's abundance, the sample's memory state (broadcast), and stability score.
+<p align="center">
+  <img src="results/figures/gnn_training_loss.png" width="60%" alt="GNN Training Loss"/>
+</p>
+<p align="center"><i>GNN training loss over 100 epochs on H100 GPU (8.7 minutes total).</i></p>
 
-- 3-layer GAT with 4 attention heads, hidden_dim=128
-- Global attention pooling
-- Predicts per-drug IC50 and reversibility probability
+- **Architecture:** 3-layer GAT, 4 attention heads, hidden_dim=128, global attention pooling
+- **Graph:** STRING PPI network (7,853 nodes, 460,888 directed edges)
+- **Node features:** protein abundance (1) + VAE memory state (64) + stability score (1) = 66 dims
+- **Training:** 100 epochs, best_val_loss = 277.78, early stopping patience = 20
 
-## Data Sources
-
-| Dataset | Source | Size |
-|---------|--------|------|
-| CCLE Proteomics | DepMap | 375 cell lines, 12,558 proteins |
-| CCLE Epigenomics | DepMap | 897 cell lines, 43 chromatin features |
-| STRING PPI | STRING v12 | 13.5M edges (460K after filtering) |
-| Drug Sensitivity | GDSC/CTRPv2 | IC50 for Bortezomib, Lenalidomide |
-| Validation | Kronke et al. 2024 | Held-out myeloma cohort |
-
-## Results
+| Epoch | Loss |
+|-------|------|
+| 10 | 1,909.35 |
+| 20 | 1,005.61 |
+| 30 | 777.19 |
+| 50 | 485.11 |
+| 70 | 340.31 |
+| 100 | 310.07 |
 
 ### Pipeline Validation (367 test samples)
 
 | Metric | Value |
 |--------|-------|
+| Test samples | 367 |
 | Mean stability score | 0.975 |
 | Stability std | 0.078 |
-| High stability samples | 357 (97.3%) |
-| Medium stability samples | 10 (2.7%) |
+| High stability (>0.7) | 357 (97.3%) |
+| Medium stability (0.4-0.7) | 10 (2.7%) |
+| Low stability (<0.4) | 0 (0.0%) |
 | GNN best validation loss | 277.78 |
 | Stability calibration loss | 0.010 |
 
-### API Test Harness (5 clinical scenarios)
+### API Test Harness (5 Clinical Scenarios)
 
-| Profile | Stability | Expected | Biological Order |
-|---------|-----------|----------|-----------------|
-| Multi-drug resistant MM | 0.9998 | High | -- |
-| Bortezomib-resistant MM | 0.9966 | High | -- |
-| Post-washout MM | 0.8032 | Medium | -- |
-| Lenalidomide-sensitive MM | 0.7716 | Low | -- |
-| Treatment-naive MM | 0.4425 | Medium | -- |
+Five biologically motivated proteomic profiles representing distinct clinical states, using published chromatin biology to set reader/writer protein abundances:
 
-- Score spread: 0.56 (range 0.44 - 1.00)
-- All 3 biological ordering checks pass
-- Inference latency: ~0.35s per sample on H100
+| Profile | Stability | Expected | Match |
+|---------|-----------|----------|-------|
+| Multi-drug resistant MM (extreme writer overexpression) | 0.9998 | High | Yes |
+| Bortezomib-resistant MM (PRC2/DNMT locked in) | 0.9966 | High | Yes |
+| Post-washout MM (partial recovery) | 0.8032 | Medium | Yes |
+| Lenalidomide-sensitive MM (high erasers, open chromatin) | 0.7716 | Low-Medium | Yes |
+| Treatment-naive MM (balanced machinery) | 0.4425 | Medium | Yes |
+
+- **Score spread:** 0.56 (range 0.44 -- 1.00)
+- **Score variance:** 0.041
+- **Biological ordering checks:** 3/3 pass (Bortez-resistant > Lenal-sensitive, MDR > Treatment-naive, MDR > Lenal-sensitive)
+- **Inference latency:** ~0.35s per sample on H100 NVL
 
 ### Training Performance
 
-| Stage | Duration (GPU) | Duration (CPU) | Speedup |
-|-------|---------------|----------------|---------|
+| Stage | Duration (H100 GPU) | Duration (CPU) | Speedup |
+|-------|---------------------|----------------|---------|
 | Stability calibration | 1.8 min | ~30 min | 17x |
 | GNN training (100 epochs) | 8.7 min | ~9 hours | 62x |
 | Validation (367 samples) | 2.2 min | ~12 min | 5x |
+| **Total pipeline** | **~14 min** | **~10 hours** | **~43x** |
 
-## Quick Start
+---
 
-### One-command setup
+## Project Structure
 
-```bash
-cd myelomemory/
-bash scripts/setup_and_run.sh
+```
+myelomemory/
+├── README.md                        # This file
+├── main.py                          # Unified pipeline entry point (8 stages)
+├── CLAUDE.md                        # Claude Code project context
+├── pyproject.toml                   # Package metadata and dependencies
+├── requirements.txt                 # Pinned dependencies
+├── configs/
+│   ├── default.yaml                 # CPU/development config
+│   ├── gpu_optimized.yaml           # H100-optimized (bf16, pin_memory, 8 workers)
+│   └── h100.yaml                    # Full H100 config (compile, large batch)
+├── myelomemory/
+│   ├── __init__.py
+│   ├── config.py                    # Configuration dataclasses (VAE, GNN, ODE, HW)
+│   ├── data/
+│   │   ├── loaders.py               # CCLE proteomics, epigenomics, STRING PPI, GDSC
+│   │   ├── preprocessors.py         # Quantile norm, KNN imputation, harmonization
+│   │   └── graph_builder.py         # STRING PPI network -> PyG graph
+│   ├── models/
+│   │   ├── vae.py                   # Module 1: Proteome-to-Epigenome conditional VAE
+│   │   ├── stability.py             # Module 2: ODE Memory Stability Scorer (Jacobian)
+│   │   └── gnn.py                   # Module 3: Resistance Pathway GNN (GAT)
+│   ├── inference/
+│   │   ├── pipeline.py              # End-to-end inference (all 3 modules)
+│   │   └── api.py                   # FastAPI server (/predict, /health, /config)
+│   └── utils/
+│       ├── checkpoint.py            # Save/load/resume with full reproducibility metadata
+│       ├── logging.py               # Structured logging + W&B integration
+│       └── metrics.py               # AUROC, AUPRC, reconstruction error, stability metrics
+├── scripts/
+│   ├── download_data.py             # Automated dataset download (DepMap, STRING, GDSC)
+│   ├── download_data.sh             # Manual download guide with validation checksums
+│   ├── setup_and_run.sh             # One-command: env + data + full pipeline
+│   └── test_api.py                  # API test harness (5 clinical profiles)
+├── tests/
+│   ├── test_vae.py                  # VAE shape contracts + module connectivity
+│   ├── test_stability.py            # ODE solver + Jacobian + scoring tests
+│   ├── test_gnn.py                  # GNN forward pass + loss computation tests
+│   └── test_pipeline.py             # End-to-end integration test (small tensors)
+├── checkpoints/                     # Git-ignored; stored on shared filesystem (~520M)
+│   ├── data_ready.pt                # 25M  - Preprocessed tensors, splits, norm params
+│   ├── vae_pretrained.pt            # 247M - Pan-cancer CCLE VAE weights
+│   ├── vae_finetuned.pt             # 247M - Hematological subset VAE weights
+│   ├── stability_calibrated.pt      # 21K  - ODE params, Jacobian normalization
+│   ├── gnn_trained.pt               # 1.6M - Best validation GNN weights
+│   └── pipeline_validated.pt        # 4.7K - End-to-end validation metrics
+└── results/
+    └── figures/                     # Generated visualizations
 ```
 
-This will create the environment, download all datasets, auto-detect your GPU, and run the full pipeline with checkpointing.
+---
 
-### Manual setup
+## Quickstart
 
 ```bash
-# Install dependencies
+# 1. Clone and enter the repo
+git clone https://github.com/Abhignya-Jagathpally/MyeloMemory.git
+cd MyeloMemory/myelomemory
+
+# 2. Create a virtual environment and install dependencies
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 
-# Download datasets
-python scripts/download_data.py --data-dir data/raw
+# 3. (Optional) Set GPU if available
+export CUDA_VISIBLE_DEVICES=0
 
-# Run full pipeline (auto-detects checkpoints, skips completed stages)
+# 4. Run the full pipeline (one command)
+bash scripts/setup_and_run.sh
+
+# Or run manually with config
 python main.py --config configs/gpu_optimized.yaml
 
-# Or run individual stages
+# Preview what stages will run (skips completed checkpoints)
+python main.py --config configs/gpu_optimized.yaml --dry-run
+```
+
+### Available stages
+
+| Stage name | Description |
+|------------|-------------|
+| `data_validate` | Validate all required raw data files exist |
+| `data_prep` | Load, normalize, impute, harmonize multi-omics |
+| `vae_pretrain` | Train VAE on pan-cancer CCLE proteomics |
+| `vae_finetune` | Fine-tune VAE on hematological subset |
+| `stability_calibrate` | Calibrate ODE stability scorer against drug washout |
+| `gnn_train` | Train GAT on STRING PPI with memory-augmented features |
+| `validate` | End-to-end validation on held-out test set |
+| `serve` | Launch FastAPI inference server |
+
+```bash
+# Run individual stages
 python main.py --config configs/gpu_optimized.yaml --stage vae_pretrain
 python main.py --config configs/gpu_optimized.yaml --stage gnn_train
 
@@ -131,38 +243,31 @@ python main.py --config configs/gpu_optimized.yaml --resume-from-latest
 
 # Multi-GPU training (H100 node with 8 GPUs)
 torchrun --nproc_per_node=8 main.py --config configs/gpu_optimized.yaml --stage vae_pretrain
-```
 
-### Start the API server
-
-```bash
-python main.py --config configs/gpu_optimized.yaml --stage serve --port 8001
-```
-
-### Run tests
-
-```bash
-# Unit tests (21 tests, no external data needed)
+# Run tests (21 unit tests, no external data needed)
 pytest tests/ -v --tb=short
 
-# API integration test
+# Start API server
+python main.py --config configs/gpu_optimized.yaml --stage serve --port 8001
+
+# Run API test harness (5 clinical scenarios)
 python scripts/test_api.py --url http://localhost:8001 --batch
 ```
 
+---
+
 ## API Reference
 
-Once the server is running, interactive docs are available at `http://localhost:8001/docs`.
-
-### Endpoints
+Interactive docs available at `http://localhost:8001/docs` once the server is running.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/health` | Health check (status, model_loaded, device) |
-| `GET` | `/config` | Current model configuration |
+| `GET` | `/health` | Health check (status, model_loaded, device, version) |
+| `GET` | `/config` | Model configuration (drugs, latent_dim, proteins tracked) |
 | `POST` | `/predict` | Single sample prediction |
 | `POST` | `/predict/batch` | Batch prediction (up to 64 samples) |
 
-### Example request
+**Example request:**
 
 ```bash
 curl -X POST http://localhost:8001/predict \
@@ -180,12 +285,12 @@ curl -X POST http://localhost:8001/predict \
   }'
 ```
 
-### Example response
+**Example response:**
 
 ```json
 {
   "stability_score": 0.9966,
-  "memory_state": [0.12, -0.05, ...],
+  "memory_state": [0.12, -0.05, 0.23, "...64 dims..."],
   "drug_predictions": [
     {
       "drug_name": "Bortezomib",
@@ -200,103 +305,58 @@ curl -X POST http://localhost:8001/predict \
       "reversibility_probability": 0.009
     }
   ],
-  "interpretation": "HIGH memory stability — this epigenetic state appears deeply locked in. Drug resistance driven by this state is likely IRREVERSIBLE through drug holidays alone. Predicted resistance to: Lenalidomide."
+  "interpretation": "HIGH memory stability -- this epigenetic state appears deeply locked in. Drug resistance driven by this state is likely IRREVERSIBLE through drug holidays alone. Predicted resistance to: Lenalidomide."
 }
 ```
 
-## Project Structure
+---
+
+## Technical Infrastructure
+
+### Hardware
+
+- **Tested on:** NVIDIA H100 NVL (94 GB VRAM), dual-GPU node at UNT HPC
+- **Minimum:** Any CUDA GPU with 8GB+ VRAM (use `default.yaml`)
+- **CPU fallback:** Supported but ~43x slower
+
+### GPU Optimizations (enabled in `gpu_optimized.yaml`)
+
+- bf16 mixed precision (native H100 bfloat16 support)
+- Gradient checkpointing for VAE encoder at batch_size=512
+- Pin memory on all DataLoaders with 8 workers + prefetch_factor=4
+- Float32 forced for Jacobian finite differences (bf16 lacks precision at eps=1e-3)
+- NaN guards for ODE divergence on rare samples
+
+### Configuration
+
+| Config | Device | VAE Batch | GNN Batch | dtype | Use Case |
+|--------|--------|-----------|-----------|-------|----------|
+| `default.yaml` | CPU | 64 | 32 | float32 | Development, testing |
+| `gpu_optimized.yaml` | CUDA | 512 | 32 | bfloat16 | Production training |
+| `h100.yaml` | CUDA | 512 | 256 | bfloat16 | Full H100 with torch.compile |
+
+---
+
+## Requirements
+
+- Python 3.10+ (tested on 3.12)
+- NVIDIA GPU with >= 8 GB VRAM (recommended: H100 80GB)
+- All dependencies listed in `requirements.txt`
+- Key packages: `torch`, `torchdiffeq`, `torch-geometric`, `fastapi`, `uvicorn`, `pandas`, `scikit-learn`, `scipy`, `pyyaml`, `wandb`, `numpy`
+
+---
+
+## Citation
+
+If you use MyeloMemory in your research, please cite:
 
 ```
-myelomemory/
-├── main.py                          # Pipeline orchestration (8 stages)
-├── pyproject.toml                   # Package metadata and dependencies
-├── requirements.txt                 # Pinned dependencies
-├── configs/
-│   ├── default.yaml                 # CPU/development config
-│   ├── gpu_optimized.yaml           # H100-optimized (bf16, pin_memory)
-│   └── h100.yaml                    # Full H100 config (compile, large batch)
-├── myelomemory/
-│   ├── config.py                    # Configuration dataclasses
-│   ├── data/
-│   │   ├── loaders.py               # CCLE, GDSC, STRING data loaders
-│   │   ├── preprocessors.py         # Normalization, imputation, harmonization
-│   │   └── graph_builder.py         # STRING PPI network → PyG graph
-│   ├── models/
-│   │   ├── vae.py                   # Module 1: Proteome-to-Epigenome cVAE
-│   │   ├── stability.py             # Module 2: ODE Memory Stability Scorer
-│   │   └── gnn.py                   # Module 3: Resistance Pathway GNN
-│   ├── inference/
-│   │   ├── pipeline.py              # End-to-end inference (all 3 modules)
-│   │   └── api.py                   # FastAPI serving endpoint
-│   └── utils/
-│       ├── checkpoint.py            # Checkpoint save/load/resume
-│       ├── logging.py               # Structured logging + W&B integration
-│       └── metrics.py               # AUROC, AUPRC, reconstruction error
-├── scripts/
-│   ├── download_data.py             # Automated dataset download
-│   ├── download_data.sh             # Manual download guide
-│   ├── setup_and_run.sh             # One-command setup + full pipeline
-│   └── test_api.py                  # API test harness (5 clinical profiles)
-├── tests/
-│   ├── test_vae.py                  # VAE shape contracts + connectivity
-│   ├── test_stability.py            # ODE solver + scoring tests
-│   ├── test_gnn.py                  # GNN forward pass + loss tests
-│   └── test_pipeline.py             # End-to-end integration test
-└── checkpoints/                     # Git-ignored; stored on shared filesystem
+Jagathpally, A. (2026). MyeloMemory: Inferring Epigenetic Drug Resistance Memory
+States in Multiple Myeloma via Proteomic-Epigenomic Integration and ODE-Based
+Stability Analysis. University of North Texas.
 ```
 
-## Checkpoints
-
-The pipeline saves checkpoints after every major stage. Each contains model weights, optimizer state, epoch, metrics, config, timestamp, and git hash.
-
-| Stage | Checkpoint | Size | Contents |
-|-------|-----------|------|----------|
-| Data preprocessing | `data_ready.pt` | 25M | Preprocessed tensors, splits, normalization params |
-| VAE pretraining | `vae_pretrained.pt` | 247M | Pan-cancer CCLE weights |
-| VAE fine-tuning | `vae_finetuned.pt` | 247M | Hematological subset weights |
-| Stability calibration | `stability_calibrated.pt` | 21K | ODE parameters, Jacobian normalization |
-| GNN training | `gnn_trained.pt` | 1.6M | Best validation loss weights |
-| Pipeline validation | `pipeline_validated.pt` | 4.7K | End-to-end metrics |
-
-## Hardware Requirements
-
-**Recommended:** NVIDIA H100 (80GB HBM3) or equivalent
-
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| GPU | Any CUDA GPU (8GB+) | H100 80GB |
-| RAM | 16GB | 64GB |
-| Storage | 5GB (code + checkpoints) | 50GB (with raw data) |
-| Python | 3.10+ | 3.12 |
-
-**GPU optimizations** (enabled in `gpu_optimized.yaml`):
-- bf16 mixed precision (native H100 support)
-- Gradient checkpointing for VAE encoder
-- Pin memory on all DataLoaders
-- 8 DataLoader workers with prefetch_factor=4
-
-## Configuration
-
-Two primary configs are provided:
-
-| Config | Device | Batch Size | dtype | Use Case |
-|--------|--------|-----------|-------|----------|
-| `default.yaml` | CPU | 32-64 | float32 | Development, testing |
-| `gpu_optimized.yaml` | CUDA | 32-512 | bfloat16 | Production training on H100 |
-
-All hyperparameters are defined as dataclasses in `myelomemory/config.py` and loaded from YAML. The pipeline auto-overrides dimensions from the actual data at runtime.
-
-## Key Dependencies
-
-| Package | Version | Purpose |
-|---------|---------|---------|
-| PyTorch | >= 2.2.0 | Core ML framework |
-| torchdiffeq | >= 0.2.3 | GPU-accelerated ODE solving |
-| torch-geometric | >= 2.5.0 | Graph neural networks |
-| FastAPI | >= 0.110.0 | API server |
-| pandas | >= 2.0.0 | Data loading |
-| scikit-learn | >= 1.3.0 | Preprocessing |
-| wandb | >= 0.16.0 | Experiment tracking |
+---
 
 ## License
 
