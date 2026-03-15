@@ -204,6 +204,47 @@ def compute_full_metrics(
     )
     metrics["n_low_stability"] = int((stability_scores <= 0.3).sum())
 
+    # Per-drug resistance metrics (AUROC, AUPRC, MSE)
+    if hasattr(dataset, "drug_sensitivity") and HAS_SKLEARN:
+        drug_names = list(predictions[0].drug_resistance.keys())
+        if drug_names:
+            predicted_ic50 = torch.tensor([
+                [p.drug_resistance.get(d, 0.0) for d in drug_names]
+                for p in predictions
+            ])
+            true_ic50 = dataset.drug_sensitivity[:len(predictions)]
+            # Only use columns matching the number of trained drugs
+            if true_ic50.shape[1] >= len(drug_names):
+                true_ic50 = true_ic50[:, :len(drug_names)]
+                drug_metrics = drug_resistance_metrics(
+                    predicted_ic50, true_ic50, drug_names
+                )
+                metrics.update(drug_metrics)
+
+    # Stability calibration metrics
+    if hasattr(dataset, "drug_sensitivity") and HAS_SKLEARN:
+        drug_sens = dataset.drug_sensitivity[:len(predictions)]
+        drug_var = torch.zeros(len(predictions))
+        for i in range(len(predictions)):
+            valid = drug_sens[i][~torch.isnan(drug_sens[i])]
+            drug_var[i] = valid.var().item() if len(valid) > 1 else float("nan")
+        stab_metrics = stability_calibration_metrics(stability_scores, drug_var)
+        metrics["stability_spearman_rho"] = stab_metrics["spearman_rho"]
+        metrics["stability_calibration_mse"] = stab_metrics["calibration_mse"]
+
+    # Bootstrap confidence intervals for key metrics
+    n_bootstrap = 1000
+    n = len(predictions)
+    if n >= 10:
+        rng = np.random.RandomState(42)
+        boot_stab = np.zeros(n_bootstrap)
+        stab_np = stability_scores.numpy()
+        for b in range(n_bootstrap):
+            idx = rng.choice(n, size=n, replace=True)
+            boot_stab[b] = stab_np[idx].mean()
+        metrics["mean_stability_ci95_low"] = float(np.percentile(boot_stab, 2.5))
+        metrics["mean_stability_ci95_high"] = float(np.percentile(boot_stab, 97.5))
+
     logger.info(
         f"Pipeline metrics ({split}): {len(predictions)} samples, "
         f"mean_stability={metrics['mean_stability']:.3f}"

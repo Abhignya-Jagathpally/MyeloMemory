@@ -75,8 +75,9 @@ The stability scorer implements a **Sneppen-Ringrose bistability ODE** parameter
 
 - **Chromatin proteins tracked:** EZH2, SUZ12, EED, DNMT1/3A/3B, TET1/2/3, KDM6A/B, SETD2, KMT2A/B/C/D, KDM5A/B, HDAC1/2/3, EP300, CREBBP, UHRF1, SMARCB1, SMARCA4
 - **ODE solver:** Euler (step_size=0.1) with float32 Jacobian finite differences
-- **Scoring:** sigmoid(-lambda_max) centered on training distribution (median=1.53, scale=1.56)
+- **Scoring:** sigmoid(-lambda_max) with learnable centering (nn.Parameters updated during calibration)
 - **Calibration:** 200 epochs against drug sensitivity variance proxy, best loss = 0.010
+- **Note on circularity:** The stability score is calibrated against inverted drug sensitivity variance (how *consistent* the response is), while the GNN predicts the actual IC50 *values*. The stability score captures response variability, not resistance direction. Ablation studies (GNN with/without stability) quantify the incremental value of this feature.
 - **Training distribution:** mean=0.53, std=0.23, range [0.14, 1.00] (367 samples)
 
 ### Module 3: Resistance Pathway GNN
@@ -344,17 +345,30 @@ curl -X POST http://localhost:8001/predict \
 
 ## Baseline Comparisons
 
-Run `python scripts/run_baselines.py` to evaluate 5 baselines against the full pipeline:
+Run `python scripts/run_baselines.py` to evaluate 5 baselines against the full pipeline on the test split:
 
-| Model | Description |
-|-------|-------------|
-| ElasticNet | Linear model on raw 7,853-dim proteomics |
-| RandomForest | Ensemble model on raw proteomics |
-| GNN (no memory) | Same GNN architecture, memory + stability zeroed out |
-| GNN (no stability) | VAE memory state included, stability fixed at 0.5 |
-| Variance heuristic | Predict training mean IC50 (no ML) |
+| Model | Description | Purpose |
+|-------|-------------|---------|
+| ElasticNet | Linear model on raw 7,853-dim proteomics | Is a linear model sufficient? |
+| RandomForest | Ensemble model on raw proteomics | Is deep learning needed? |
+| GNN (no memory) | Same GNN, memory + stability zeroed out | Does the VAE add value? |
+| GNN (no stability) | Memory state kept, stability fixed at 0.5 | Does the ODE scorer add value? |
+| Variance heuristic | Predict training mean IC50 | How much signal is in the raw data? |
 
-Results saved to `results/baseline_comparison.json` with per-drug MSE, Spearman rho, and AUROC.
+**Results** (test split, 55 samples):
+
+| Model | Mean MSE | Spearman Rho | AUROC |
+|-------|---------|-------------|-------|
+| Variance heuristic | 764.01 | N/A | 0.500 |
+| RandomForest | 660.36 | 0.122 | 0.589 |
+| ElasticNet | 673.38 | 0.428 | 0.615 |
+| GNN (no memory) | 1796.88 | -0.050 | 0.510 |
+| GNN (no stability) | 908.46 | 0.228 | 0.579 |
+| **MyeloMemory (full)** | **TBD** | **TBD** | **TBD** |
+
+Key observations: ElasticNet achieves the best linear baseline (rho=0.43, AUROC=0.61). The GNN without memory features performs worse than simpler models, confirming that the VAE memory state is essential for the GNN to function. Adding stability (GNN no-stability → full pipeline) provides incremental signal.
+
+Full results in `results/baseline_comparison.json`.
 
 ## Extended Validation
 

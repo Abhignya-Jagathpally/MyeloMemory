@@ -1,0 +1,107 @@
+{
+  "metadata": {
+    "drug_names": [
+      "Bortezomib",
+      "Lenalidomide"
+    ],
+    "train_size": 257,
+    "test_size": 55
+  },
+  "baselines": {
+    "RandomForest": {
+      "per_drug": {
+        "Bortezomib": {
+          "mse": 0.0024772670885687244,
+          "spearman_rho": -0.11587701061385274,
+          "auroc": 0.5069252077562327
+        },
+        "Lenalidomide": {
+          "mse": 1320.7183982532165,
+          "spearman_rho": 0.35915678524374167,
+          "auroc": 0.6719367588932806
+        }
+      },
+      "aggregate": {
+        "mean_mse": 660.3604377601525,
+        "mean_spearman_rho": 0.12163988731494446,
+        "mean_auroc": 0.5894309833247566
+      }
+    },
+    "ElasticNet": {
+      "per_drug": {
+        "Bortezomib": {
+          "mse": 0.0022487715305223267,
+          "spearman_rho": null,
+          "auroc": 0.5
+        },
+        "Lenalidomide": {
+          "mse": 1346.7609207830612,
+          "spearman_rho": 0.427931488801054,
+          "auroc": 0.7292490118577075
+        }
+      },
+      "aggregate": {
+        "mean_mse": 673.3815847772959,
+        "mean_spearman_rho": 0.427931488801054,
+        "mean_auroc": 0.6146245059288538
+      }
+    },
+    "GNN_no_memory": {
+      "per_drug": {
+        "Bortezomib": {
+          "mse": 0.032587356865406036,
+          "spearman_rho": -0.11675237991027465,
+          "auroc": 0.46537396121883656
+        },
+        "Lenalidomide": {
+          "mse": 3593.720947265625,
+          "spearman_rho": 0.016205533596837945,
+          "auroc": 0.5553359683794467
+        }
+      },
+      "aggregate": {
+        "mean_mse": 1796.8767673112452,
+        "mean_spearman_rho": -0.05027342315671835,
+        "mean_auroc": 0.5103549647991417
+      }
+    },
+    "GNN_no_stability": {
+      "per_drug": {
+        "Bortezomib": {
+          "mse": 0.011306926608085632,
+          "spearman_rho": 0.2981726665937192,
+          "auroc": 0.6149584487534625
+        },
+        "Lenalidomide": {
+          "mse": 1816.9111328125,
+          "spearman_rho": 0.15678524374176547,
+          "auroc": 0.5434782608695652
+        }
+      },
+      "aggregate": {
+        "mean_mse": 908.461219869554,
+        "mean_spearman_rho": 0.22747895516774236,
+        "mean_auroc": 0.5792183548115138
+      }
+    },
+    "VarianceHeuristic": {
+      "per_drug": {
+        "Bortezomib": {
+          "mse": 0.0022487715305223267,
+          "spearman_rho": null,
+          "auroc": 0.5
+        },
+        "Lenalidomide": {
+          "mse": 1528.0102915118132,
+          "spearman_rho": null,
+          "auroc": 0.5
+        }
+      },
+      "aggregate": {
+        "mean_mse": 764.0062701416718,
+        "mean_spearman_rho": null,
+        "mean_auroc": 0.5
+      }
+    }
+  }
+}
