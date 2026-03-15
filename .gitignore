@@ -1,0 +1,12 @@
+bin/
+lib/
+share/
+pyvenv.cfg
+myelomemory/checkpoints/*.pt
+myelomemory/checkpoints_large/*.pt
+myelomemory/logs/
+myelomemory/logs_large/
+myelomemory/data/
+myelomemory/.git/
+__pycache__/
+*.egg-info/
