@@ -81,11 +81,6 @@ The stability scorer implements a **Sneppen-Ringrose bistability ODE** parameter
 
 ### Module 3: Resistance Pathway GNN
 
-<p align="center">
-  <img src="results/figures/gnn_training_loss.png" width="60%" alt="GNN Training Loss"/>
-</p>
-<p align="center"><i>GNN training loss over 100 epochs on H100 GPU (8.7 minutes total).</i></p>
-
 - **Architecture:** 3-layer GAT, 4 attention heads, hidden_dim=128, global attention pooling
 - **Graph:** STRING PPI network (7,853 nodes, 460,888 directed edges)
 - **Node features:** protein abundance (1) + VAE memory state (64) + stability score (1) = 66 dims
@@ -100,6 +95,11 @@ The stability scorer implements a **Sneppen-Ringrose bistability ODE** parameter
 | 70 | 340.31 |
 | 100 | 310.07 |
 
+<p align="center">
+  <img src="results/figures/gnn_training_loss.png" width="55%" alt="GNN Training Loss"/>
+</p>
+<p align="center"><i>GNN training loss over 100 epochs on H100 GPU (8.7 minutes total).</i></p>
+
 ### Pipeline Validation (367 test samples)
 
 | Metric | Value |
@@ -112,6 +112,11 @@ The stability scorer implements a **Sneppen-Ringrose bistability ODE** parameter
 | Low stability (<0.4) | 0 (0.0%) |
 | GNN best validation loss | 277.78 |
 | Stability calibration loss | 0.010 |
+
+<p align="center">
+  <img src="results/figures/stability_distribution.png" width="55%" alt="Stability Distribution"/>
+</p>
+<p align="center"><i>Memory stability score distribution across 367 test samples. Dashed red line = mean; dotted lines = classification thresholds.</i></p>
 
 ### API Test Harness (5 Clinical Scenarios)
 
@@ -130,6 +135,11 @@ Five biologically motivated proteomic profiles representing distinct clinical st
 - **Biological ordering checks:** 3/3 pass (Bortez-resistant > Lenal-sensitive, MDR > Treatment-naive, MDR > Lenal-sensitive)
 - **Inference latency:** ~0.35s per sample on H100 NVL
 
+<p align="center">
+  <img src="results/figures/clinical_profiles.png" width="60%" alt="Clinical Profiles"/>
+</p>
+<p align="center"><i>Stability scores for 5 biologically motivated clinical profiles. Green = medium, yellow = high-medium, red = high stability.</i></p>
+
 ### Training Performance
 
 | Stage | Duration (H100 GPU) | Duration (CPU) | Speedup |
@@ -138,6 +148,11 @@ Five biologically motivated proteomic profiles representing distinct clinical st
 | GNN training (100 epochs) | 8.7 min | ~9 hours | 62x |
 | Validation (367 samples) | 2.2 min | ~12 min | 5x |
 | **Total pipeline** | **~14 min** | **~10 hours** | **~43x** |
+
+<p align="center">
+  <img src="results/figures/training_speedup.png" width="60%" alt="Training Speedup"/>
+</p>
+<p align="center"><i>GPU vs CPU training time comparison (log scale). Numbers above bars show speedup factor.</i></p>
 
 ---
 
