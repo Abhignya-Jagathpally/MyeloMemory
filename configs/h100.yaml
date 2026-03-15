@@ -1,0 +1,103 @@
+# MyeloMemory — H100 80GB HBM3 Optimized Configuration
+#
+# Tuned for single H100 GPU. For multi-GPU, use torchrun:
+#   torchrun --nproc_per_node=8 main.py --config configs/h100.yaml
+#
+# Key optimizations:
+#   - bf16 mixed precision (native H100 support, no loss scaling needed)
+#   - torch.compile with reduce-overhead mode
+#   - Large batch sizes (512 for VAE, 256 for GNN)
+#   - Gradient checkpointing for VAE encoder
+#   - 8 DataLoader workers with prefetch_factor=4
+#   - tf32 matmuls enabled (set in main.py)
+
+checkpoint_dir: checkpoints
+log_dir: logs
+wandb_project: myelomemory
+
+data:
+  min_protein_coverage: 0.7
+  imputation_method: knn
+  normalization: quantile
+  ppi_confidence_threshold: 0.7
+  test_fraction: 0.15
+  val_fraction: 0.15
+  random_seed: 42
+
+vae:
+  input_dim: 8000
+  epigenome_dim: 50000
+  latent_dim: 64
+  encoder_hidden_dims: [2048, 1024, 512]
+  decoder_hidden_dims: [512, 1024, 2048]
+  dropout: 0.1
+  use_batch_norm: true
+  activation: gelu
+
+  # Training — H100 can handle large batches in bf16
+  pretrain_epochs: 200
+  finetune_epochs: 100
+  pretrain_lr: 0.001
+  finetune_lr: 0.0001
+  weight_decay: 0.00001
+  batch_size: 512
+  gradient_clip_norm: 1.0
+
+  # KL annealing
+  kl_anneal_cycles: 4
+  kl_anneal_ratio: 0.5
+  kl_weight_max: 1.0
+
+  # Gradient checkpointing saves ~30% VRAM at batch_size=512
+  gradient_checkpointing: true
+  patience: 20
+
+stability:
+  ode_solver: dopri5
+  ode_rtol: 0.00001
+  ode_atol: 0.0000001
+  integration_time: 100.0
+  n_perturbation_samples: 50
+  calibration_lr: 0.001
+  calibration_epochs: 500
+  calibration_batch_size: 64
+
+gnn:
+  hidden_dim: 256
+  num_layers: 4
+  num_heads: 8
+  dropout: 0.2
+  conv_type: gat
+  pool_type: global_attention
+  num_drugs: 6
+  predict_reversibility: true
+
+  # Training
+  epochs: 300
+  lr: 0.0005
+  weight_decay: 0.0001
+  batch_size: 256
+  gradient_clip_norm: 1.0
+  scheduler: cosine
+
+  # Loss weights
+  resistance_loss_weight: 1.0
+  reversibility_loss_weight: 0.5
+  patience: 30
+
+hardware:
+  device: cuda
+  dtype: bfloat16
+  compile: true
+  compile_mode: reduce-overhead
+  pin_memory: true
+  num_workers: 8
+  prefetch_factor: 4
+  deterministic: false
+  seed: 42
+
+api:
+  port: 8000
+  workers: 1
+  max_batch_size: 64
+  timeout: 30

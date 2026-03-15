@@ -1,12 +1,42 @@
+# Virtual environment
 bin/
 lib/
 share/
 pyvenv.cfg
-myelomemory/checkpoints/*.pt
-myelomemory/checkpoints_large/*.pt
-myelomemory/logs/
-myelomemory/logs_large/
-myelomemory/data/
-myelomemory/.git/
+venv/
+.venv/
+env/
+
+# Checkpoints (large files — store on shared filesystem)
+checkpoints/*.pt
+checkpoints_large/*.pt
+
+# Data (downloaded separately)
+data/
+
+# Logs
+logs/
+logs_large/
+wandb/
+
+# Python
 __pycache__/
+*.pyc
+*.pyo
 *.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/

@@ -346,46 +346,59 @@ def train_resistance_gnn(
     best_val_loss = float("inf")
     patience_counter = 0
 
+    # Pre-convert train indices for fast shuffling
+    train_indices_t = torch.as_tensor(splits["train"], dtype=torch.long)
+
     for epoch in range(config.epochs):
         model.train()
         epoch_loss = 0.0
         n_batches = 0
 
-        train_indices = splits["train"]
-        for start in range(0, len(train_indices), config.batch_size):
-            batch_idx = train_indices[start:start + config.batch_size]
+        perm = torch.randperm(len(train_indices_t))
+        shuffled_indices = train_indices_t[perm]
 
-            proteomics = dataset.proteomics[batch_idx].to(device)
-            drug_targets = dataset.drug_sensitivity[batch_idx].to(device)
+        for start in range(0, len(shuffled_indices), config.batch_size):
+            batch_idx = shuffled_indices[start:start + config.batch_size]
+
+            proteomics = dataset.proteomics[batch_idx].to(device, non_blocking=True)
+            drug_targets = dataset.drug_sensitivity[batch_idx].to(device, non_blocking=True)
             drug_mask = ~torch.isnan(drug_targets)
             drug_targets_clean = torch.where(
                 drug_mask, drug_targets, torch.zeros_like(drug_targets)
             )
 
-            memory_states = all_memory_states[batch_idx].to(device)
-            stability_scores = all_stability_scores[batch_idx].to(device)
+            memory_states = all_memory_states[batch_idx].to(device, non_blocking=True)
+            stability_scores = all_stability_scores[batch_idx].to(device, non_blocking=True)
 
-            # Build per-sample graphs with real PPI structure and memory features
-            graphs = []
-            for i in range(len(batch_idx)):
-                g = build_sample_graph(
-                    proteomics=proteomics[i],
-                    memory_state=memory_states[i],
-                    stability_score=stability_scores[i].item(),
-                    edge_index=edge_index,
-                    edge_attr=edge_attr,
-                    drug_sensitivity=drug_targets_clean[i],
-                )
-                graphs.append(g)
+            # Vectorized batched graph construction (avoids per-sample Python loop)
+            B, P = proteomics.shape
+            L = memory_states.shape[1]
+            E = edge_index.shape[1]
 
-            batch = PyGBatch.from_data_list(graphs)
+            node_x = torch.cat([
+                proteomics.unsqueeze(2),
+                memory_states.unsqueeze(1).expand(-1, P, -1),
+                stability_scores.unsqueeze(1).unsqueeze(2).expand(-1, P, 1),
+            ], dim=2).reshape(B * P, -1)
+
+            offsets = torch.arange(B, device=device).unsqueeze(1) * P
+            batch_edge_index = (
+                edge_index.unsqueeze(0).expand(B, -1, -1) + offsets.unsqueeze(1)
+            ).reshape(2, B * E)
+            batch_edge_attr = edge_attr.unsqueeze(0).expand(B, -1, -1).reshape(B * E, -1)
+            batch_vec = torch.arange(B, device=device).unsqueeze(1).expand(-1, P).reshape(-1)
+
+            from torch_geometric.data import Data as PyGData
+            batch = PyGData(x=node_x, edge_index=batch_edge_index, edge_attr=batch_edge_attr)
+            batch.batch = batch_vec
+            batch.num_graphs = B
 
             optimizer.zero_grad(set_to_none=True)
 
             with autocast("cuda", dtype=torch.bfloat16):
                 output = model(batch)
 
-                targets = torch.stack([g.y for g in graphs])
+                targets = drug_targets_clean
                 loss_res = _resistance_loss(output["resistance"], targets, drug_mask)
                 loss = config.resistance_loss_weight * loss_res
 

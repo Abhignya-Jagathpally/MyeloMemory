@@ -143,9 +143,10 @@ class MemoryStabilityScorer(nn.Module):
         self.ode = ChromatinODE(config)
         self.protein_names = config.reader_writer_proteins
 
-        # Learnable scale/bias for final score normalization
-        self.score_scale = nn.Parameter(torch.tensor(1.0))
-        self.score_bias = nn.Parameter(torch.tensor(0.0))
+        # Learnable normalization for sigmoid centering
+        # Initialized from training distribution statistics; updated during calibration
+        self.basin_center = nn.Parameter(torch.tensor(1.53))
+        self.basin_scale = nn.Parameter(torch.tensor(1.56))
 
     def extract_reader_writer_levels(
         self,
@@ -322,12 +323,9 @@ class MemoryStabilityScorer(nn.Module):
         # Step 4: Estimate basin depth
         basin_depth = self._estimate_basin_depth(ode_params, a_steady, r_steady)
 
-        # Step 5: Normalize to [0, 1] — sigmoid centered on training median.
-        # Fixed center (1.53) and scale (1.56) place the 5th–95th percentile
-        # of training basin depths across sigmoid's steep zone [-2, +2].
-        basin_center = 1.53  # Median basin depth from training data
-        basin_scale = 1.56   # Maps p5–p95 range [0.76, 3.31] to sigmoid [-2, +2]
-        score = torch.sigmoid(basin_scale * (basin_depth - basin_center))
+        # Step 5: Normalize to [0, 1] — sigmoid with learnable centering.
+        # basin_center and basin_scale are nn.Parameters updated during calibration.
+        score = torch.sigmoid(self.basin_scale * (basin_depth - self.basin_center))
 
         # Guard against NaN from ODE divergence on rare samples
         score = torch.where(score.isnan(), torch.tensor(0.5, device=score.device), score)
@@ -417,7 +415,9 @@ def calibrate_scorer(
         if (epoch + 1) % 50 == 0:
             logger.info(
                 f"[stability_calibrate] Epoch {epoch + 1}/{config.calibration_epochs} "
-                f"loss={loss.item():.4f}"
+                f"loss={loss.item():.4f} "
+                f"basin_center={scorer.basin_center.item():.4f} "
+                f"basin_scale={scorer.basin_scale.item():.4f}"
             )
 
         if loss.item() < best_loss:
