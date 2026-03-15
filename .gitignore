@@ -7,9 +7,10 @@ venv/
 .venv/
 env/
 
-# Checkpoints (large files — store on shared filesystem)
-checkpoints/*.pt
-checkpoints_large/*.pt
+# Checkpoints — include small ones, exclude VAE (>100MB GitHub limit)
+checkpoints/vae_pretrained.pt
+checkpoints/vae_finetuned.pt
+checkpoints_large/
 
 # Data (downloaded separately)
 data/
