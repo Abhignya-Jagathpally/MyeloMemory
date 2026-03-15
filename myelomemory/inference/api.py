@@ -10,6 +10,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
 import torch
@@ -56,12 +57,29 @@ class PredictResponse(BaseModel):
     stability_score: float = Field(
         description="Memory stability: 0=transient adaptation, 1=locked-in memory"
     )
+    stability_category: str = Field(
+        description="Categorical stability level: high / medium / low"
+    )
     memory_state: list[float] = Field(
         description="64-dim latent epigenetic memory state embedding"
     )
     drug_predictions: list[DrugPrediction]
+    top_resistance_drugs: list[str] = Field(
+        description="Drugs ranked by resistance probability (P > 0.5)"
+    )
     interpretation: str = Field(
         description="Human-readable interpretation of the results"
+    )
+    coverage_pct: float = Field(
+        description="Percentage of expected proteins provided in the input"
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Warnings about input quality or prediction reliability"
+    )
+    model_version: str = Field(
+        default="0.1.0",
+        description="Model version for traceability"
     )
 
 
@@ -97,6 +115,20 @@ def create_app(
     Returns:
         Configured FastAPI app.
     """
+    pipeline_state: dict[str, Any] = {"pipeline": None}
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            pipeline_state["pipeline"] = MyeloMemoryPipeline.from_checkpoints(
+                ckpt_mgr, config
+            )
+            logger.info("Pipeline loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load pipeline: {e}")
+            raise
+        yield
+
     app = FastAPI(
         title="MyeloMemory API",
         description=(
@@ -104,32 +136,27 @@ def create_app(
             "states in multiple myeloma."
         ),
         version="0.1.0",
+        lifespan=lifespan,
     )
 
-    # Load pipeline at startup
-    pipeline: MyeloMemoryPipeline | None = None
-
-    @app.on_event("startup")
-    async def load_pipeline() -> None:
-        nonlocal pipeline
-        try:
-            pipeline = MyeloMemoryPipeline.from_checkpoints(ckpt_mgr, config)
-            logger.info("Pipeline loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load pipeline: {e}")
-            raise
+    def _get_pipeline() -> MyeloMemoryPipeline:
+        p = pipeline_state["pipeline"]
+        if p is None:
+            raise HTTPException(status_code=503, detail="Model not loaded")
+        return p
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
         return HealthResponse(
-            status="ok" if pipeline is not None else "not_ready",
-            model_loaded=pipeline is not None,
+            status="ok" if pipeline_state["pipeline"] is not None else "not_ready",
+            model_loaded=pipeline_state["pipeline"] is not None,
             device=str(config.device),
             version="0.1.0",
         )
 
     @app.get("/config")
     async def get_config() -> dict[str, Any]:
+        pipeline = pipeline_state["pipeline"]
         return {
             "target_drugs": pipeline.drug_names if pipeline else config.data.target_drugs,
             "latent_dim": config.vae.latent_dim,
@@ -139,21 +166,36 @@ def create_app(
 
     @app.post("/predict", response_model=PredictResponse)
     async def predict(request: PredictRequest) -> PredictResponse:
-        if pipeline is None:
-            raise HTTPException(status_code=503, detail="Model not loaded")
+        pipeline = _get_pipeline()
 
         # Convert protein dict to tensor
         protein_names = list(request.protein_abundances.keys())
         values = list(request.protein_abundances.values())
         proteomics = torch.tensor(values, dtype=torch.float32)
+        n_provided = len(values)
 
         # Pad to expected input dimension if needed
         expected_dim = config.vae.input_dim
-        if len(values) < expected_dim:
-            padding = torch.zeros(expected_dim - len(values))
+        if n_provided < expected_dim:
+            padding = torch.zeros(expected_dim - n_provided)
             proteomics = torch.cat([proteomics, padding])
             protein_names.extend(
-                [f"_pad_{i}" for i in range(expected_dim - len(values))]
+                [f"_pad_{i}" for i in range(expected_dim - n_provided)]
+            )
+
+        # Coverage and warnings
+        coverage_pct = round(n_provided / expected_dim * 100, 1)
+        warnings: list[str] = []
+        if coverage_pct < 1:
+            warnings.append(
+                f"Very sparse input ({n_provided} of {expected_dim} proteins). "
+                "Drug predictions should not be used for clinical interpretation."
+            )
+        elif coverage_pct < 10:
+            warnings.append(
+                f"Only {n_provided} of {expected_dim} proteins provided ({coverage_pct}%). "
+                "Stability score uses 26 reader/writer proteins and is reliable. "
+                "Drug resistance predictions may be unreliable due to sparse proteomics input."
             )
 
         result = pipeline.predict_single(proteomics, protein_names)
@@ -164,7 +206,6 @@ def create_app(
             ic50 = result.drug_resistance.get(drug_name, 0.0)
             rev = result.drug_reversibility.get(drug_name, 0.5)
 
-            # Convert IC50 to resistance probability (sigmoid of normalized IC50)
             resistance_prob = 1.0 / (1.0 + 2.718 ** (-ic50))
 
             drug_preds.append(DrugPrediction(
@@ -174,20 +215,40 @@ def create_app(
                 reversibility_probability=round(rev, 4),
             ))
 
-        # Generate interpretation
-        interpretation = _interpret(result.stability_score, drug_preds)
+        # Stability category
+        stability = result.stability_score
+        if stability > 0.7:
+            stability_category = "high"
+        elif stability > 0.4:
+            stability_category = "medium"
+        else:
+            stability_category = "low"
+
+        # Top resistance drugs
+        top_resistance = sorted(
+            [dp for dp in drug_preds if dp.resistance_probability > 0.5],
+            key=lambda d: d.resistance_probability,
+            reverse=True,
+        )
+        top_resistance_drugs = [d.drug_name for d in top_resistance]
+
+        interpretation = _interpret(stability, drug_preds)
 
         return PredictResponse(
-            stability_score=round(result.stability_score, 4),
+            stability_score=round(stability, 4),
+            stability_category=stability_category,
             memory_state=result.memory_state.tolist(),
             drug_predictions=drug_preds,
+            top_resistance_drugs=top_resistance_drugs,
             interpretation=interpretation,
+            coverage_pct=coverage_pct,
+            warnings=warnings,
+            model_version="0.1.0",
         )
 
     @app.post("/predict/batch")
     async def predict_batch(request: BatchPredictRequest) -> list[PredictResponse]:
-        if pipeline is None:
-            raise HTTPException(status_code=503, detail="Model not loaded")
+        _get_pipeline()
 
         if len(request.samples) > config.api.max_batch_size:
             raise HTTPException(
@@ -206,15 +267,7 @@ def create_app(
 
 
 def _interpret(stability_score: float, drug_preds: list[DrugPrediction]) -> str:
-    """Generate a human-readable interpretation of the results.
-
-    Args:
-        stability_score: Memory stability score.
-        drug_preds: List of per-drug predictions.
-
-    Returns:
-        Interpretation string.
-    """
+    """Generate a human-readable interpretation of the results."""
     if stability_score > 0.7:
         stability_text = (
             "HIGH memory stability — this epigenetic state appears deeply "

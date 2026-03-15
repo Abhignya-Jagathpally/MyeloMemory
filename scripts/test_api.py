@@ -203,7 +203,12 @@ def test_single_prediction(base_url: str, name: str, profile: dict) -> dict | No
 
         data = r.json()
         print(f"  Latency:      {elapsed:.2f}s")
-        print(f"  Stability:    {data['stability_score']:.4f}")
+        print(f"  Stability:    {data['stability_score']:.4f} ({data.get('stability_category', 'N/A')})")
+        if data.get("coverage_pct") is not None:
+            print(f"  Coverage:     {data['coverage_pct']}%")
+        if data.get("warnings"):
+            for w in data["warnings"]:
+                print(f"  WARNING:      {w}")
 
         # Memory state summary
         mem = data["memory_state"]
